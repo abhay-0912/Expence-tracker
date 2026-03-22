@@ -1,5 +1,5 @@
 import { getLLMProviderNameFromEnv } from "./llm/config.js";
-import { createLLMProvider, createLLMProviderWithFallback } from "./llm/providerRegistry.js";
+import { createLLMProvider, createLLMProviderWithFallback, createProviderWithRuntimeFallback } from "./llm/providerRegistry.js";
 
 let activeProvider = null;
 
@@ -21,7 +21,14 @@ export function createLLMProviderFromConfig(env = process.env, withFallback = tr
 	};
 
 	if (withFallback) {
-		return createLLMProviderWithFallback(providerName, options);
+		// Try to initialize primary provider; fallback to alternatives if init fails
+		try {
+			createLLMProviderWithFallback(providerName, options);
+		} catch (err) {
+			console.warn("Could not initialize any provider at startup");
+		}
+		// Return a provider wrapper that handles runtime failures too
+		return createProviderWithRuntimeFallback(providerName, options);
 	}
 	return createLLMProvider(providerName, options);
 }

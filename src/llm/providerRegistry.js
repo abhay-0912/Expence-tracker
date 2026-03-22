@@ -62,3 +62,50 @@ export function createLLMProviderWithFallback(primaryProvider, options = {}) {
 export function getAvailableProviders() {
   return Object.keys(providerFactories);
 }
+
+/**
+ * Wraps a provider with runtime fallback support.
+ * If a parse operation fails, automatically tries fallback providers.
+ */
+export function createProviderWithRuntimeFallback(primaryProvider, options = {}) {
+  const fallbacks = fallbackChain[primaryProvider] || [];
+  const allProvidersToTry = [primaryProvider, ...fallbacks];
+
+  return {
+    async parseExpenseFromText(text) {
+      for (const providerName of allProvidersToTry) {
+        try {
+          const provider = createLLMProvider(providerName, options);
+          const result = await provider.parseExpenseFromText(text);
+          if (result) {
+            console.log(`✓ Successfully parsed with ${providerName}`);
+            return result;
+          }
+        } catch (err) {
+          console.warn(`⚠ ${providerName} parse failed:`, err.message);
+          continue;
+        }
+      }
+      console.error("⚠ All providers failed to parse text");
+      return null;
+    },
+
+    async parseExpenseFromImage(imageBuffer, mimeType = "image/jpeg") {
+      for (const providerName of allProvidersToTry) {
+        try {
+          const provider = createLLMProvider(providerName, options);
+          const result = await provider.parseExpenseFromImage(imageBuffer, mimeType);
+          if (result) {
+            console.log(`✓ Successfully parsed image with ${providerName}`);
+            return result;
+          }
+        } catch (err) {
+          console.warn(`⚠ ${providerName} image parse failed:`, err.message);
+          continue;
+        }
+      }
+      console.error("⚠ All providers failed to parse image");
+      return null;
+    },
+  };
+}
