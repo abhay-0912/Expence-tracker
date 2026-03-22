@@ -1,4 +1,4 @@
-import { parseExpenseFromText, parseExpenseFromImage } from "./claude.js";
+import { parseExpenseFromText, parseExpenseFromImage } from "./LLM.js";
 import {
   saveExpense,
   getSummary,
@@ -9,9 +9,9 @@ import { sendMessage, downloadMedia } from "./twilioApi.js";
 
 const COMMANDS = {
   SUMMARY: ["summary", "total", "totals", "how much", "spent"],
-  REPORT:  ["report", "monthly report", "this month"],
-  HELP:    ["help", "commands", "hi", "hello", "start"],
-  DELETE:  ["delete last", "undo", "remove last"],
+  REPORT: ["report", "monthly report", "this month"],
+  HELP: ["help", "commands", "hi", "hello", "start"],
+  DELETE: ["delete last", "undo", "remove last"],
 };
 
 function matchCommand(text) {
@@ -22,65 +22,88 @@ function matchCommand(text) {
   return null;
 }
 
-export async function handleIncomingMessage({ from, body, mediaUrl, mediaType }) {
-  try {
-    // ── Image / bill photo ─────────────────────────────────────────
-    if (mediaUrl && mediaType?.startsWith("image/")) {
-      await sendMessage(from, "📸 Got your bill! Analyzing it...");
+export function createWhatsAppHandler({ llm, expenseStore, messenger }) {
+  const activeLLM = llm ?? {
+    parseExpenseFromText,
+    parseExpenseFromImage,
+  };
 
-      const imageBuffer = await downloadMedia(mediaUrl);
-      const expense = await parseExpenseFromImage(imageBuffer, mediaType);
+  const activeExpenseStore = expenseStore ?? {
+    saveExpense,
+    getSummary,
+    getMonthlyReport,
+    deleteLastExpense,
+  };
 
-      if (!expense?.amount) {
-        return sendMessage(
+  const activeMessenger = messenger ?? {
+    sendMessage,
+    downloadMedia,
+  };
+
+  return async function handleIncomingMessage({ from, body, mediaUrl, mediaType }) {
+    try {
+      if (mediaUrl && mediaType?.startsWith("image/")) {
+        await activeMessenger.sendMessage(from, "📸 Got your bill! Analyzing it...");
+
+        const imageBuffer = await activeMessenger.downloadMedia(mediaUrl);
+        const expense = await activeLLM.parseExpenseFromImage(imageBuffer, mediaType);
+
+        if (!expense?.amount) {
+          return activeMessenger.sendMessage(
+            from,
+            "😕 Couldn't read the bill clearly. Try a clearer photo, or type the amount manually (e.g. *food 350*)."
+          );
+        }
+
+        await activeExpenseStore.saveExpense(from, expense);
+        return activeMessenger.sendMessage(from, confirmationMessage(expense));
+      }
+
+      if (!body) return;
+
+      const command = matchCommand(body);
+
+      if (command === "HELP") return activeMessenger.sendMessage(from, helpMessage());
+
+      if (command === "SUMMARY") {
+        const summary = await activeExpenseStore.getSummary(from);
+        return activeMessenger.sendMessage(from, formatSummary(summary));
+      }
+
+      if (command === "REPORT") {
+        const report = await activeExpenseStore.getMonthlyReport(from);
+        return activeMessenger.sendMessage(from, formatReport(report));
+      }
+
+      if (command === "DELETE") {
+        const deleted = await activeExpenseStore.deleteLastExpense(from);
+        return activeMessenger.sendMessage(
           from,
-          "😕 Couldn't read the bill clearly. Try a clearer photo, or type the amount manually (e.g. *food 350*)."
+          deleted
+            ? `✅ Deleted: *${deleted.description || deleted.category}* — ₹${deleted.amount}`
+            : "No recent expense found to delete."
         );
       }
 
-      await saveExpense(from, expense);
-      return sendMessage(from, confirmationMessage(expense));
+      const expense = await activeLLM.parseExpenseFromText(body);
+
+      if (!expense?.amount) {
+        return activeMessenger.sendMessage(
+          from,
+          "❓ Couldn't detect an expense. Try:\n• *food ₹200*\n• *uber 150*\n• *groceries 800*\n\nOr type *help* to see all commands."
+        );
+      }
+
+      await activeExpenseStore.saveExpense(from, expense);
+      return activeMessenger.sendMessage(from, confirmationMessage(expense));
+    } catch (err) {
+      console.error("handleIncomingMessage error:", err);
+      await activeMessenger.sendMessage(from, "⚠️ Something went wrong. Please try again in a moment.");
     }
-
-    // ── Text message ───────────────────────────────────────────────
-    if (!body) return; // empty message, ignore
-
-    const command = matchCommand(body);
-
-    if (command === "HELP")    return sendMessage(from, helpMessage());
-    if (command === "SUMMARY") return sendMessage(from, formatSummary(await getSummary(from)));
-    if (command === "REPORT")  return sendMessage(from, formatReport(await getMonthlyReport(from)));
-
-    if (command === "DELETE") {
-      const deleted = await deleteLastExpense(from);
-      return sendMessage(
-        from,
-        deleted
-          ? `✅ Deleted: *${deleted.description || deleted.category}* — ₹${deleted.amount}`
-          : "No recent expense found to delete."
-      );
-    }
-
-    // Try to parse as an expense
-    const expense = await parseExpenseFromText(body);
-
-    if (!expense?.amount) {
-      return sendMessage(
-        from,
-        "❓ Couldn't detect an expense. Try:\n• *food ₹200*\n• *uber 150*\n• *groceries 800*\n\nOr type *help* to see all commands."
-      );
-    }
-
-    await saveExpense(from, expense);
-    return sendMessage(from, confirmationMessage(expense));
-
-  } catch (err) {
-    console.error("handleIncomingMessage error:", err);
-    await sendMessage(from, "⚠️ Something went wrong. Please try again in a moment.");
-  }
+  };
 }
 
-// ── Message formatters ───────────────────────────────────────────────────────
+export const handleIncomingMessage = createWhatsAppHandler({});
 
 function confirmationMessage({ category, amount, description }) {
   return (
@@ -95,7 +118,7 @@ function confirmationMessage({ category, amount, description }) {
 function formatSummary(rows) {
   if (!rows?.length) return "No expenses recorded this month yet!";
 
-  const total = rows.reduce((s, r) => s + Number(r.total), 0);
+  const total = rows.reduce((sum, row) => sum + Number(row.total), 0);
   let msg = `📊 *This Month's Spending*\n\n`;
 
   for (const row of rows) {
@@ -109,7 +132,7 @@ function formatSummary(rows) {
 function formatReport(rows) {
   if (!rows?.length) return "No expenses found for this month.";
 
-  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
+  const total = rows.reduce((sum, row) => sum + Number(row.amount), 0);
   let msg = `📋 *Monthly Report*\n`;
   let lastCat = null;
 
@@ -118,8 +141,10 @@ function formatReport(rows) {
       msg += `\n*${categoryEmoji(row.category)} ${row.category}*\n`;
       lastCat = row.category;
     }
+
     const date = new Date(row.created_at).toLocaleDateString("en-IN", {
-      day: "numeric", month: "short",
+      day: "numeric",
+      month: "short",
     });
     msg += `  • ${date} — ₹${row.amount}${row.description ? ` (${row.description})` : ""}\n`;
   }
@@ -146,8 +171,16 @@ function helpMessage() {
 
 function categoryEmoji(cat) {
   return {
-    Food: "🍔", Groceries: "🛒", Transport: "🚗", Shopping: "🛍",
-    Health: "💊", Entertainment: "🎬", Utilities: "⚡", Rent: "🏠",
-    Education: "📚", Travel: "✈️", Other: "📌",
+    Food: "🍔",
+    Groceries: "🛒",
+    Transport: "🚗",
+    Shopping: "🛍",
+    Health: "💊",
+    Entertainment: "🎬",
+    Utilities: "⚡",
+    Rent: "🏠",
+    Education: "📚",
+    Travel: "✈️",
+    Other: "📌",
   }[cat] || "📌";
 }
