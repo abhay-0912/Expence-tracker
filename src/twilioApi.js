@@ -1,15 +1,38 @@
 import twilio from "twilio";
 
-const client = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+let client = null;
+let fromNumber = null;
 
-const FROM = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
+function getTwilioClient() {
+  if (!client) {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+    if (!accountSid || !authToken) {
+      throw new Error("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required");
+    }
+
+    client = twilio(accountSid, authToken);
+  }
+
+  return client;
+}
+
+function getFromNumber() {
+  if (!fromNumber) {
+    if (!process.env.TWILIO_WHATSAPP_NUMBER) {
+      throw new Error("TWILIO_WHATSAPP_NUMBER is required");
+    }
+
+    fromNumber = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
+  }
+
+  return fromNumber;
+}
 
 /** Send a WhatsApp text message via Twilio */
 export async function sendMessage(to, text) {
-  await client.messages.create({ from: FROM, to, body: text });
+  await getTwilioClient().messages.create({ from: getFromNumber(), to, body: text });
 }
 
 /**

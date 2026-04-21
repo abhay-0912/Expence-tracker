@@ -1,12 +1,23 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+let supabase = null;
+
+function getSupabaseClient() {
+  if (supabase) return supabase;
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+  }
+
+  supabase = createClient(supabaseUrl, serviceRoleKey);
+  return supabase;
+}
 
 export async function saveExpense(phone, { amount, category, description }) {
-  const { error } = await supabase
+  const { error } = await getSupabaseClient()
     .from("expenses")
     .insert({ phone, amount, category, description });
 
@@ -15,7 +26,7 @@ export async function saveExpense(phone, { amount, category, description }) {
 
 /** Totals per category for the current calendar month */
 export async function getSummary(phone) {
-  const { data, error } = await supabase.rpc("get_monthly_summary", {
+  const { data, error } = await getSupabaseClient().rpc("get_monthly_summary", {
     p_phone: phone,
   });
   if (error) throw new Error(`Supabase summary: ${error.message}`);
@@ -28,7 +39,7 @@ export async function getMonthlyReport(phone) {
   const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const end   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await getSupabaseClient()
     .from("expenses")
     .select("*")
     .eq("phone", phone)
@@ -43,7 +54,7 @@ export async function getMonthlyReport(phone) {
 
 /** Delete the most recent expense for this phone number */
 export async function deleteLastExpense(phone) {
-  const { data, error: findErr } = await supabase
+  const { data, error: findErr } = await getSupabaseClient()
     .from("expenses")
     .select("*")
     .eq("phone", phone)
@@ -53,7 +64,7 @@ export async function deleteLastExpense(phone) {
   if (findErr || !data?.length) return null;
 
   const row = data[0];
-  const { error: delErr } = await supabase.from("expenses").delete().eq("id", row.id);
+  const { error: delErr } = await getSupabaseClient().from("expenses").delete().eq("id", row.id);
   if (delErr) throw new Error(`Supabase delete: ${delErr.message}`);
   return row;
 }
@@ -63,7 +74,7 @@ export async function getAllPhonesThisMonth() {
   const now   = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await getSupabaseClient()
     .from("expenses")
     .select("phone")
     .gte("created_at", start);
